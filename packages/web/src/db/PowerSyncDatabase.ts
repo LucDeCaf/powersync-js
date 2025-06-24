@@ -126,6 +126,7 @@ export class PowerSyncDatabase extends AbstractPowerSyncDatabase {
 
   protected unloadListener?: () => Promise<void>;
   protected resolvedFlags: WebPowerSyncFlags;
+  protected devtoolsAttached: boolean = false;
 
   constructor(options: WebPowerSyncDatabaseOptionsWithAdapter);
   constructor(options: WebPowerSyncDatabaseOptionsWithOpenFactory);
@@ -141,6 +142,11 @@ export class PowerSyncDatabase extends AbstractPowerSyncDatabase {
     if (this.resolvedFlags.enableMultiTabs && !this.resolvedFlags.externallyUnload) {
       this.unloadListener = () => this.close({ disconnect: false });
       window.addEventListener('unload', this.unloadListener);
+    }
+
+    // Expose API for PowerSync Devtools
+    if (process.env.NODE_ENV === 'development') {
+      this.attachDevtoolsEventListeners();
     }
   }
 
@@ -220,5 +226,157 @@ export class PowerSyncDatabase extends AbstractPowerSyncDatabase {
       default:
         return new WebStreamingSyncImplementation(syncOptions);
     }
+  }
+
+  protected attachDevtoolsEventListeners() {
+    // Wait for content script to load
+    document.addEventListener('powersyncDevtoolsInit', (_event) => {
+      // Devtools pane was opened, closed, and re-opened - needs data to be sent to it
+      if (this.devtoolsAttached) {
+        (async () => {
+          const data = [];
+          for (const table of this._schema.tables) {
+            const tableData = await this.getAll(`SELECT * FROM ${table.name}`);
+            data.push(tableData);
+          }
+          document.dispatchEvent(
+            new CustomEvent('powersyncDevtoolsInitAck', {
+              detail: {
+                schema: this._schema,
+                tables: data
+              }
+            })
+          );
+        })();
+
+        return;
+      }
+
+      // Register listeners to tell devtools when internal structure / data changes
+      this.registerListener({
+        schemaChanged: (schema) =>
+          document.dispatchEvent(
+            new CustomEvent('powersyncSchemaChanged', {
+              detail: {
+                schema
+              }
+            })
+          ),
+        statusChanged: (status) =>
+          document.dispatchEvent(
+            new CustomEvent('powersyncStatusChanged', {
+              detail: status
+            })
+          )
+      });
+
+      // Register listener for registering queries (runs after CS receives schema)
+      document.addEventListener('powersyncDevtoolsRegisterQueries', (event: CustomEventInit<string[]>) => {
+        if (!event.detail) {
+          // TODO: More robust error handling, eg. request_ids for identifying sources of errors better
+          document.dispatchEvent(
+            new CustomEvent('powersyncDevtoolsError', {
+              detail: {
+                during: 'powersyncDevtoolsRegisterQueries',
+                message: 'Missing event detail'
+              }
+            })
+          );
+          return;
+        }
+
+        // Register listener queries
+        const tables = event.detail;
+        for (const table of tables) {
+          this.watchWithCallback(`SELECT * FROM ${table}`, [], {
+            onResult: (result) => {
+              document.dispatchEvent(
+                new CustomEvent('powersyncTableChanged', {
+                  detail: {
+                    success: true,
+                    data: {
+                      tableName: table,
+                      // Have to manually extract query results because results.rows.item is a
+                      // function, and functions can only send JSON data (not functions).
+                      //
+                      // If Chrome finds a non-JSON object (eg. function signature) then
+                      // the entire result object is set to null.
+                      queryResult: {
+                        insertId: result.insertId ?? undefined,
+                        rows: result.rows
+                          ? {
+                              _array: result.rows?._array,
+                              length: result.rows?.length
+                            }
+                          : undefined,
+                        rowsAffected: result.rowsAffected
+                      }
+                    }
+                  }
+                })
+              );
+            },
+            onError: (error) => {
+              document.dispatchEvent(
+                new CustomEvent('powersyncTableChanged', {
+                  detail: {
+                    success: false,
+                    message: error.message
+                  }
+                })
+              );
+            }
+          });
+        }
+      });
+
+      // Register listener for requests for current table data
+      document.addEventListener('powersyncDevtoolsSelectAll', async (event: CustomEventInit<{ tableName: string }>) => {
+        this.getAll('SELECT * FROM ?', [event.detail!.tableName])
+          .then((data) => {
+            // Use TableChanged event handler because that already has the code for updating
+            // the devtools' internal table representation
+            document.dispatchEvent(
+              new CustomEvent('powersyncTableChanged', {
+                detail: {
+                  success: true,
+                  data
+                }
+              })
+            );
+          })
+          .catch((error) =>
+            document.dispatchEvent(
+              new CustomEvent('powersyncTableChanged', {
+                detail: {
+                  success: false,
+                  message: error.message
+                }
+              })
+            )
+          );
+      });
+
+      // Respond to devtools when done initializing
+      this.registerListener({
+        // Fetch all table schemas and table data before acknowledging
+        initialized: async () => {
+          // TODO: Consider converting this to an object with table names as keys
+          const data = [];
+          for (const table of this._schema.tables) {
+            const tableData = await this.getAll(`SELECT * FROM ${table.name}`);
+            data.push(tableData);
+          }
+          document.dispatchEvent(
+            new CustomEvent('powersyncDevtoolsInitAck', {
+              detail: {
+                schema: this._schema,
+                tables: data
+              }
+            })
+          );
+        }
+      });
+    });
   }
 }
