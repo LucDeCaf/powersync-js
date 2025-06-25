@@ -126,7 +126,6 @@ export class PowerSyncDatabase extends AbstractPowerSyncDatabase {
 
   protected unloadListener?: () => Promise<void>;
   protected resolvedFlags: WebPowerSyncFlags;
-  protected devtoolsAttached: boolean = false;
 
   constructor(options: WebPowerSyncDatabaseOptionsWithAdapter);
   constructor(options: WebPowerSyncDatabaseOptionsWithOpenFactory);
@@ -228,155 +227,98 @@ export class PowerSyncDatabase extends AbstractPowerSyncDatabase {
     }
   }
 
+  // TODO: Send this.getClientId() with all responses to distinguish between diff PS clients
   protected attachDevtoolsEventListeners() {
-    // Wait for content script to load
-    document.addEventListener('powersyncDevtoolsInit', (_event) => {
-      // Devtools pane was opened, closed, and re-opened - needs data to be sent to it
-      if (this.devtoolsAttached) {
-        (async () => {
-          const data = [];
-          for (const table of this._schema.tables) {
-            const tableData = await this.getAll(`SELECT * FROM ${table.name}`);
-            data.push(tableData);
-          }
-          document.dispatchEvent(
-            new CustomEvent('powersyncDevtoolsInitAck', {
-              detail: {
-                schema: this._schema,
-                tables: data
-              }
-            })
-          );
-        })();
+    // Only attach listeners once initialized
+    this.registerListener({
+      initialized: () => {
+        // Listen to events
+        window.addEventListener('message', (event) => {
+          // Ignore messages from other origins
+          if (event.origin !== window.location.origin) return;
 
-        return;
-      }
+          // Require the 'type' field
+          if (!('type' in event.data)) return;
 
-      // Register listeners to tell devtools when internal structure / data changes
-      this.registerListener({
-        schemaChanged: (schema) =>
-          document.dispatchEvent(
-            new CustomEvent('powersyncSchemaChanged', {
-              detail: {
-                schema
-              }
-            })
-          ),
-        statusChanged: (status) =>
-          document.dispatchEvent(
-            new CustomEvent('powersyncStatusChanged', {
-              detail: status
-            })
-          )
-      });
+          // Only respond to messages from devtools
+          if (!event.data.type.startsWith('POWERSYNC_DEVTOOLS_')) return;
 
-      // Register listener for registering queries (runs after CS receives schema)
-      document.addEventListener('powersyncDevtoolsRegisterQueries', (event: CustomEventInit<string[]>) => {
-        if (!event.detail) {
-          // TODO: More robust error handling, eg. request_ids for identifying sources of errors better
-          document.dispatchEvent(
-            new CustomEvent('powersyncDevtoolsError', {
-              detail: {
-                during: 'powersyncDevtoolsRegisterQueries',
-                message: 'Missing event detail'
-              }
-            })
-          );
-          return;
-        }
+          // Remove 'POWERSYNC_DEVTOOLS_'
+          const messageType = event.data.type.slice(19);
 
-        // Register listener queries
-        const tables = event.detail;
-        for (const table of tables) {
-          this.watchWithCallback(`SELECT * FROM ${table}`, [], {
-            onResult: (result) => {
-              document.dispatchEvent(
-                new CustomEvent('powersyncTableChanged', {
-                  detail: {
-                    success: true,
-                    data: {
-                      tableName: table,
-                      // Have to manually extract query results because results.rows.item is a
-                      // function, and functions can only send JSON data (not functions).
-                      //
-                      // If Chrome finds a non-JSON object (eg. function signature) then
-                      // the entire result object is set to null.
-                      queryResult: {
-                        insertId: result.insertId ?? undefined,
-                        rows: result.rows
-                          ? {
-                              _array: result.rows?._array,
-                              length: result.rows?.length
-                            }
-                          : undefined,
-                        rowsAffected: result.rowsAffected
+          // Only run if done initializing
+          if (this.ready) {
+            switch (messageType) {
+              case 'INIT':
+                // Begin fetching initial data
+                const queries = this._schema.tables.map((table) => this.getAll(`SELECT * FROM ${table.name}`));
+
+                // Send initialization data to devtools
+                Promise.all(queries)
+                  .then((data) => {
+                    window.postMessage({
+                      type: 'POWERSYNC_CLIENT_INIT_ACK',
+                      data: {
+                        schema: this._schema,
+                        tables: data
                       }
-                    }
-                  }
-                })
-              );
-            },
-            onError: (error) => {
-              document.dispatchEvent(
-                new CustomEvent('powersyncTableChanged', {
-                  detail: {
-                    success: false,
-                    message: error.message
-                  }
-                })
-              );
+                    });
+                  })
+                  .catch((error) => {
+                    // TODO: Respond with error
+                    console.error('Error: Failed to generate initialization data for devtools: ', error);
+                  });
+                break;
+
+              default:
+                // TODO: Use this.logger instead of console
+                console.warn('Unknown message type: ', messageType);
+                break;
             }
-          });
-        }
-      });
-
-      // Register listener for requests for current table data
-      document.addEventListener('powersyncDevtoolsSelectAll', async (event: CustomEventInit<{ tableName: string }>) => {
-        this.getAll('SELECT * FROM ?', [event.detail!.tableName])
-          .then((data) => {
-            // Use TableChanged event handler because that already has the code for updating
-            // the devtools' internal table representation
-            document.dispatchEvent(
-              new CustomEvent('powersyncTableChanged', {
-                detail: {
-                  success: true,
-                  data
-                }
-              })
-            );
-          })
-          .catch((error) =>
-            document.dispatchEvent(
-              new CustomEvent('powersyncTableChanged', {
-                detail: {
-                  success: false,
-                  message: error.message
-                }
-              })
-            )
-          );
-      });
-
-      // Respond to devtools when done initializing
-      this.registerListener({
-        // Fetch all table schemas and table data before acknowledging
-        initialized: async () => {
-          // TODO: Consider converting this to an object with table names as keys
-          const data = [];
-          for (const table of this._schema.tables) {
-            const tableData = await this.getAll(`SELECT * FROM ${table.name}`);
-            data.push(tableData);
           }
-          document.dispatchEvent(
-            new CustomEvent('powersyncDevtoolsInitAck', {
-              detail: {
-                schema: this._schema,
-                tables: data
-              }
-            })
-          );
-        }
-      });
+        });
+
+        // Register listener for when tables are changed
+        this.onChangeWithCallback(
+          {
+            onChange: (event) =>
+              event.changedTables
+                // Convert 'ps_data__<table>' and 'ps_data_local__<table>' to '<table>'
+                .filter((table) => table.startsWith('ps_data__') || table.startsWith('ps_data_local__'))
+                .map((table) => table.slice(table.indexOf('__') + 2))
+                .forEach((table) => {
+                  this.getAll(`SELECT * FROM ${table}`)
+                    .then((data) => {
+                      window.postMessage({
+                        type: 'POWERSYNC_CLIENT_TABLE_CHANGED',
+                        data: {
+                          success: true,
+                          tableName: table,
+                          data
+                        }
+                      });
+                    })
+                    .catch((error) =>
+                      window.postMessage({
+                        type: 'POWERSYNC_CLIENT_TABLE_CHANGED',
+                        data: {
+                          success: false,
+                          error
+                        }
+                      })
+                    );
+                }),
+            onError: (error) => {
+              // TODO: Send error to devtools
+              console.error('Error in onChangeWithCallback:', error);
+            }
+          },
+          {
+            // Watch on all tables
+            tables: this._schema.tables.map((table) => table.name)
+          }
+        );
+      }
     });
   }
 }
