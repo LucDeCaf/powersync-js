@@ -249,26 +249,42 @@ export class PowerSyncDatabase extends AbstractPowerSyncDatabase {
           // Only run if done initializing
           if (!this.ready) return;
 
-          switch (messageType) {
-            case 'INIT':
-              // Begin fetching initial data
-              const queries = this._schema.tables.map((table) => this.getAll(`SELECT * FROM ${table.name}`));
+          // *** Define valid message types ***
+          if (messageType === 'INIT') {
+            const queries = this._schema.tables.map((table) => this.getAll(`SELECT * FROM ${table.name}`));
+            // Send initialization data to devtools
+            const data = await Promise.all(queries);
+            window.postMessage({
+              type: 'POWERSYNC_CLIENT_INIT_ACK',
+              data: {
+                schema: this._schema,
+                tables: data
+              }
+            });
+          }
 
-              // Send initialization data to devtools
-              const data = await Promise.all(queries);
+          if (messageType === 'QUERY') {
+            const query = event.data.data.query;
+            try {
+              console.log(query);
+              const data = await this.getAll(query);
+              console.log('resp: ', data)
               window.postMessage({
-                type: 'POWERSYNC_CLIENT_INIT_ACK',
+                type: 'POWERSYNC_CLIENT_QUERY_RESPONSE',
                 data: {
-                  schema: this._schema,
-                  tables: data
+                  success: true,
+                  data
                 }
               });
-              break;
-
-            default:
-              // TODO: Use this.logger instead of console
-              console.warn('Unknown message type: ', messageType);
-              break;
+            } catch (error) {
+              window.postMessage({
+                type: 'POWERSYNC_CLIENT_QUERY_RESPONSE',
+                data: {
+                  success: false,
+                  error
+                }
+              });
+            }
           }
         });
 
