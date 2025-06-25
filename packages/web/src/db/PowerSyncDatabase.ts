@@ -238,7 +238,7 @@ export class PowerSyncDatabase extends AbstractPowerSyncDatabase {
           if (event.origin !== window.location.origin) return;
 
           // Require the 'type' field
-          if (!('type' in event.data)) return;
+          if (!event.data.type) return;
 
           // Only respond to messages from devtools
           if (!event.data.type.startsWith('POWERSYNC_DEVTOOLS_')) return;
