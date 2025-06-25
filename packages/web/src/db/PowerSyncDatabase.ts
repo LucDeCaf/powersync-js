@@ -233,7 +233,7 @@ export class PowerSyncDatabase extends AbstractPowerSyncDatabase {
     this.registerListener({
       initialized: () => {
         // Listen to events
-        window.addEventListener('message', (event) => {
+        window.addEventListener('message', async (event) => {
           // Ignore messages from other origins
           if (event.origin !== window.location.origin) return;
 
@@ -247,70 +247,60 @@ export class PowerSyncDatabase extends AbstractPowerSyncDatabase {
           const messageType = event.data.type.slice(19);
 
           // Only run if done initializing
-          if (this.ready) {
-            switch (messageType) {
-              case 'INIT':
-                // Begin fetching initial data
-                const queries = this._schema.tables.map((table) => this.getAll(`SELECT * FROM ${table.name}`));
+          if (!this.ready) return;
 
-                // Send initialization data to devtools
-                Promise.all(queries)
-                  .then((data) => {
-                    window.postMessage({
-                      type: 'POWERSYNC_CLIENT_INIT_ACK',
-                      data: {
-                        schema: this._schema,
-                        tables: data
-                      }
-                    });
-                  })
-                  .catch((error) => {
-                    // TODO: Respond with error
-                    console.error('Error: Failed to generate initialization data for devtools: ', error);
-                  });
-                break;
+          switch (messageType) {
+            case 'INIT':
+              // Begin fetching initial data
+              const queries = this._schema.tables.map((table) => this.getAll(`SELECT * FROM ${table.name}`));
 
-              default:
-                // TODO: Use this.logger instead of console
-                console.warn('Unknown message type: ', messageType);
-                break;
-            }
+              // Send initialization data to devtools
+              const data = await Promise.all(queries);
+              window.postMessage({
+                type: 'POWERSYNC_CLIENT_INIT_ACK',
+                data: {
+                  schema: this._schema,
+                  tables: data
+                }
+              });
+              break;
+
+            default:
+              // TODO: Use this.logger instead of console
+              console.warn('Unknown message type: ', messageType);
+              break;
           }
         });
 
         // Register listener for when tables are changed
-        this.onChangeWithCallback(
+        this.onChange(
           {
-            onChange: (event) =>
-              event.changedTables
-                // Convert 'ps_data__<table>' and 'ps_data_local__<table>' to '<table>'
+            onChange: async (event) => {
+              // Convert 'ps_data__<table>' and 'ps_data_local__<table>' to '<table>'
+              const tables = event.changedTables
                 .filter((table) => table.startsWith('ps_data__') || table.startsWith('ps_data_local__'))
-                .map((table) => table.slice(table.indexOf('__') + 2))
-                .forEach((table) => {
-                  this.getAll(`SELECT * FROM ${table}`)
-                    .then((data) => {
-                      window.postMessage({
-                        type: 'POWERSYNC_CLIENT_TABLE_CHANGED',
-                        data: {
-                          success: true,
-                          tableName: table,
-                          data
-                        }
-                      });
-                    })
-                    .catch((error) =>
-                      window.postMessage({
-                        type: 'POWERSYNC_CLIENT_TABLE_CHANGED',
-                        data: {
-                          success: false,
-                          error
-                        }
-                      })
-                    );
-                }),
+                .map((table) => table.slice(table.indexOf('__') + 2));
+
+              for (const table of tables) {
+                const data = await this.getAll(`SELECT * FROM ${table}`);
+                window.postMessage({
+                  type: 'POWERSYNC_CLIENT_TABLE_CHANGED',
+                  data: {
+                    success: true,
+                    tableName: table,
+                    data
+                  }
+                });
+              }
+            },
             onError: (error) => {
-              // TODO: Send error to devtools
-              console.error('Error in onChangeWithCallback:', error);
+              window.postMessage({
+                type: 'POWERSYNC_CLIENT_TABLE_CHANGED',
+                data: {
+                  success: false,
+                  error
+                }
+              });
             }
           },
           {
