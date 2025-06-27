@@ -268,7 +268,7 @@ export class PowerSyncDatabase extends AbstractPowerSyncDatabase {
             try {
               console.log(query);
               const data = await this.getAll(query);
-              console.log('resp: ', data)
+              console.log('resp: ', data);
               window.postMessage({
                 type: 'POWERSYNC_CLIENT_QUERY_RESPONSE',
                 data: {
@@ -285,6 +285,13 @@ export class PowerSyncDatabase extends AbstractPowerSyncDatabase {
                 }
               });
             }
+          }
+
+          if (messageType === 'GET_STATUS') {
+            window.postMessage({
+              type: 'POWERSYNC_CLIENT_STATUS',
+              data: this.currentStatus.toJSON()
+            });
           }
         });
 
@@ -324,6 +331,15 @@ export class PowerSyncDatabase extends AbstractPowerSyncDatabase {
             tables: this._schema.tables.map((table) => table.name)
           }
         );
+
+        // Send status updates through
+        this.registerListener({
+          statusUpdated: (status) =>
+            window.postMessage({
+              type: 'POWERSYNC_CLIENT_STATUS',
+              data: status
+            })
+        });
       }
     });
   }
