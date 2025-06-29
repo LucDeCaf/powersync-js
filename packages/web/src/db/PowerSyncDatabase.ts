@@ -250,12 +250,12 @@ export class PowerSyncDatabase extends AbstractPowerSyncDatabase {
           if (!this.ready) return;
 
           // *** Define valid message types ***
-          if (messageType === 'INIT') {
+          if (messageType === 'TABLES') {
             const queries = this._schema.tables.map((table) => this.getAll(`SELECT * FROM ${table.name}`));
             // Send initialization data to devtools
             const data = await Promise.all(queries);
             window.postMessage({
-              type: 'POWERSYNC_CLIENT_INIT_ACK',
+              type: 'POWERSYNC_CLIENT_TABLES',
               data: {
                 schema: this._schema,
                 tables: data
@@ -340,6 +340,10 @@ export class PowerSyncDatabase extends AbstractPowerSyncDatabase {
               data: status
             })
         });
+
+        // Send initial message to let content script know about Powersync instance
+        // TODO: Send client_id through with connection to allow multiple Powersync instances
+        window.postMessage({ type: 'POWERSYNC_CLIENT_INIT' });
       }
     });
   }
