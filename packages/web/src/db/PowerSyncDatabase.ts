@@ -334,10 +334,10 @@ export class PowerSyncDatabase extends AbstractPowerSyncDatabase {
 
         // Send status updates through
         this.registerListener({
-          statusUpdated: (status) =>
+          statusChanged: (status) =>
             window.postMessage({
               type: 'POWERSYNC_CLIENT_STATUS',
-              data: status
+              data: status.toJSON()
             })
         });
 
