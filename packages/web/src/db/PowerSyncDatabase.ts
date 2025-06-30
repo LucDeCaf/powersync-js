@@ -251,13 +251,13 @@ export class PowerSyncDatabase extends AbstractPowerSyncDatabase {
 
           // *** Define valid message types ***
           if (messageType === 'TABLES') {
-            const queries = this._schema.tables.map((table) => this.getAll(`SELECT * FROM ${table.name}`));
+            const queries = this.schema.tables.map((table) => this.getAll(`SELECT * FROM ${table.name}`));
             // Send initialization data to devtools
             const data = await Promise.all(queries);
             window.postMessage({
               type: 'POWERSYNC_CLIENT_TABLES',
               data: {
-                schema: this._schema,
+                schema: this.schema,
                 tables: data
               }
             });
@@ -328,7 +328,7 @@ export class PowerSyncDatabase extends AbstractPowerSyncDatabase {
           },
           {
             // Watch on all tables
-            tables: this._schema.tables.map((table) => table.name)
+            tables: this.schema.tables.map((table) => table.name)
           }
         );
 
