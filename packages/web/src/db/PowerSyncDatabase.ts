@@ -32,6 +32,8 @@ import {
   WebStreamingSyncImplementation,
   WebStreamingSyncImplementationOptions
 } from './sync/WebStreamingSyncImplementation';
+import * as Comlink from 'comlink';
+import { OpenAsyncDatabaseConnection } from './adapters/AsyncDatabaseConnection';
 
 export interface WebPowerSyncFlags extends WebSQLFlags {
   /**
@@ -145,7 +147,7 @@ export class PowerSyncDatabase extends AbstractPowerSyncDatabase {
 
     // Expose API for PowerSync Devtools
     if (process.env.NODE_ENV === 'development') {
-      this.attachDevtoolsEventListeners();
+      this.attachDevtools();
     }
   }
 
@@ -227,123 +229,30 @@ export class PowerSyncDatabase extends AbstractPowerSyncDatabase {
     }
   }
 
-  // TODO: Send this.getClientId() with all responses to distinguish between diff PS clients
-  protected attachDevtoolsEventListeners() {
-    // Only attach listeners once initialized
-    this.registerListener({
-      initialized: () => {
-        // Listen to events
-        window.addEventListener('message', async (event) => {
-          // Ignore messages from other origins
-          if (event.origin !== window.location.origin) return;
+  protected async attachDevtools() {
+    this.connectionManager.registerListener({
+      syncStreamCreated: async (sync) => {
+        if (sync instanceof SSRStreamingSyncImplementation) {
+          this.logger && this.logger.debug('Disable SSR mode to use the devtools.');
+          return;
+        }
 
-          // Require the 'type' field
-          if (!event.data.type) return;
+        const db = this.database as WebDBAdapter;
+        const { port } = await db.shareConnection();
+        const resolvedOptions = db.getConfiguration();
+        const clientId = await this.getClientId();
 
-          // Only respond to messages from devtools
-          if (!event.data.type.startsWith('POWERSYNC_DEVTOOLS_')) return;
+        // TODO: Sync status port
 
-          // Remove 'POWERSYNC_DEVTOOLS_'
-          const messageType = event.data.type.slice(19);
-
-          // Only run if done initializing
-          if (!this.ready) return;
-
-          // *** Define valid message types ***
-          if (messageType === 'TABLES') {
-            const queries = this.schema.tables.map((table) => this.getAll(`SELECT * FROM ${table.name}`));
-            // Send initialization data to devtools
-            const data = await Promise.all(queries);
-            window.postMessage({
-              type: 'POWERSYNC_CLIENT_TABLES',
-              data: {
-                schema: this.schema,
-                tables: data
-              }
-            });
-          }
-
-          if (messageType === 'QUERY') {
-            const query = event.data.data.query;
-            try {
-              console.log(query);
-              const data = await this.getAll(query);
-              console.log('resp: ', data);
-              window.postMessage({
-                type: 'POWERSYNC_CLIENT_QUERY_RESPONSE',
-                data: {
-                  success: true,
-                  data
-                }
-              });
-            } catch (error) {
-              window.postMessage({
-                type: 'POWERSYNC_CLIENT_QUERY_RESPONSE',
-                data: {
-                  success: false,
-                  error
-                }
-              });
-            }
-          }
-
-          if (messageType === 'GET_STATUS') {
-            window.postMessage({
-              type: 'POWERSYNC_CLIENT_STATUS',
-              data: this.currentStatus.toJSON()
-            });
-          }
-        });
-
-        // Register listener for when tables are changed
-        this.onChange(
+        window.postMessage(
           {
-            onChange: async (event) => {
-              // Convert 'ps_data__<table>' and 'ps_data_local__<table>' to '<table>'
-              const tables = event.changedTables
-                .filter((table) => table.startsWith('ps_data__') || table.startsWith('ps_data_local__'))
-                .map((table) => table.slice(table.indexOf('__') + 2));
-
-              for (const table of tables) {
-                const data = await this.getAll(`SELECT * FROM ${table}`);
-                window.postMessage({
-                  type: 'POWERSYNC_CLIENT_TABLE_CHANGED',
-                  data: {
-                    success: true,
-                    tableName: table,
-                    data
-                  }
-                });
-              }
-            },
-            onError: (error) => {
-              window.postMessage({
-                type: 'POWERSYNC_CLIENT_TABLE_CHANGED',
-                data: {
-                  success: false,
-                  error
-                }
-              });
-            }
+            type: 'POWERSYNC_CLIENT_INIT',
+            data: { resolvedOptions },
+            clientId
           },
-          {
-            // Watch on all tables
-            tables: this.schema.tables.map((table) => table.name)
-          }
+          '*',
+          [port]
         );
-
-        // Send status updates through
-        this.registerListener({
-          statusChanged: (status) =>
-            window.postMessage({
-              type: 'POWERSYNC_CLIENT_STATUS',
-              data: status.toJSON()
-            })
-        });
-
-        // Send initial message to let content script know about Powersync instance
-        // TODO: Send client_id through with connection to allow multiple Powersync instances
-        window.postMessage({ type: 'POWERSYNC_CLIENT_INIT' });
       }
     });
   }
