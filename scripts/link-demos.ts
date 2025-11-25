@@ -71,7 +71,6 @@ const linkDemo = async (demoName: string) => {
   // Update package.json
   const packageJsonPath = path.join(demoSrc, 'package.json');
   const packageJson = JSON.parse(await fs.readFile(packageJsonPath, 'utf8'));
-  console.log('pre: ', packageJson);
 
   const updateDeps = async (deps: { [key: string]: string }) => {
     for (const dep in deps) {
@@ -90,12 +89,7 @@ const linkDemo = async (demoName: string) => {
     await updateDeps(packageJson.devDependencies);
   }
 
-  console.log('post: ', packageJson);
-  console.log('stringify: \n', JSON.stringify(packageJson, null, 2));
-
-  await fs.writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2), 'utf8');
-
-  console.log('file content: \n', JSON.parse(await fs.readFile(packageJsonPath, 'utf8')));
+  await fs.writeFile(packageJsonPath, `${JSON.stringify(packageJson, null, 2)}\n`, 'utf8');
 };
 
 // Function to process each demo
