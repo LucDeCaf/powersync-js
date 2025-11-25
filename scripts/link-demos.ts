@@ -17,7 +17,7 @@
 
 import { findWorkspacePackages } from '@pnpm/workspace.find-packages';
 import { execSync } from 'child_process';
-import * as fs from 'fs/promises';
+import * as fs from 'fs';
 import * as path from 'path';
 
 enum TestState {
@@ -70,9 +70,9 @@ const linkDemo = async (demoName: string) => {
 
   // Update package.json
   const packageJsonPath = path.join(demoSrc, 'package.json');
-  const packageJson = JSON.parse(await fs.readFile(packageJsonPath, 'utf8'));
+  const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
 
-  const updateDeps = async (deps: { [key: string]: string }) => {
+  const updateDeps = (deps: { [key: string]: string }) => {
     for (const dep in deps) {
       const matchingPackage = workspacePackages.find((p) => p.manifest.name === dep);
       if (matchingPackage != undefined) {
@@ -82,14 +82,14 @@ const linkDemo = async (demoName: string) => {
   };
 
   if (packageJson.dependencies) {
-    await updateDeps(packageJson.dependencies);
+    updateDeps(packageJson.dependencies);
   }
 
   if (packageJson.devDependencies) {
-    await updateDeps(packageJson.devDependencies);
+    updateDeps(packageJson.devDependencies);
   }
 
-  await fs.writeFile(packageJsonPath, `${JSON.stringify(packageJson, null, 2)}\n`, 'utf8');
+  fs.writeFileSync(packageJsonPath, `${JSON.stringify(packageJson, null, 2)}\n`, 'utf8');
 };
 
 // Function to process each demo
@@ -104,18 +104,16 @@ const buildDemo = async (demoName: string): Promise<TestResult> => {
   };
 
   // Ensure node_modules is present
-  try {
-    const nodeModulesPath = path.join(demoSrc, 'node_modules');
-    await fs.access(nodeModulesPath);
-  } catch (e) {
+  const nodeModulesPath = path.join(demoSrc, 'node_modules');
+  if (!fs.existsSync(nodeModulesPath)) {
     result.state = TestState.FAILED;
-    result.error = e.message;
+    result.error = 'File not found';
     return result;
   }
 
   // Run pnpm build
   const packageJsonPath = path.join(demoSrc, 'package.json');
-  const pkg = JSON.parse(await fs.readFile(packageJsonPath, 'utf-8'));
+  const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
   if (!pkg.scripts['test:build']) {
     result.state = TestState.WARN;
     return result;
@@ -157,7 +155,7 @@ const main = async () => {
   }
 
   try {
-    const allDemos = await fs.readdir(demosDir);
+    const allDemos = fs.readdirSync(demosDir);
     let demoNames: string[];
 
     if (args.length > 0) {
