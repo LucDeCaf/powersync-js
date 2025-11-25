@@ -15,7 +15,6 @@
  * Most of this code is copied from './scripts/isolated-demo-test.ts'.
  */
 
-import * as core from '@actions/core';
 import { findWorkspacePackages } from '@pnpm/workspace.find-packages';
 import { execSync } from 'child_process';
 import * as fs from 'fs/promises';
@@ -28,14 +27,9 @@ enum TestState {
 }
 
 type TestResult = {
+  name: string;
   state: TestState;
   error?: string;
-};
-
-type DemoResult = {
-  name: string;
-  installResult: TestResult;
-  buildResult: TestResult;
 };
 
 const displayState = (state: TestState) => {
@@ -77,11 +71,12 @@ const linkDemo = async (demoName: string) => {
   // Update package.json
   const packageJsonPath = path.join(demoSrc, 'package.json');
   const packageJson = JSON.parse(await fs.readFile(packageJsonPath, 'utf8'));
+  console.log('pre: ', packageJson);
 
   const updateDeps = async (deps: { [key: string]: string }) => {
     for (const dep in deps) {
-      const matchingPackage = workspacePackages.find((p) => p.manifest.name === dep) != undefined;
-      if (matchingPackage) {
+      const matchingPackage = workspacePackages.find((p) => p.manifest.name === dep);
+      if (matchingPackage != undefined) {
         deps[dep] = 'workspace:*';
       }
     }
@@ -95,42 +90,40 @@ const linkDemo = async (demoName: string) => {
     await updateDeps(packageJson.devDependencies);
   }
 
+  console.log('post: ', packageJson);
+  console.log('stringify: \n', JSON.stringify(packageJson, null, 2));
+
   await fs.writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2), 'utf8');
+
+  console.log('file content: \n', JSON.parse(await fs.readFile(packageJsonPath, 'utf8')));
 };
 
 // Function to process each demo
-const processDemo = async (demoName: string, installOnly: boolean): Promise<DemoResult> => {
+const buildDemo = async (demoName: string): Promise<TestResult> => {
   const demoSrc = path.join(demosDir, demoName);
 
   console.log(`Processing ${demoName}`);
 
-  const result: DemoResult = {
+  const result: TestResult = {
     name: demoName,
-    installResult: {
-      state: TestState.WARN
-    },
-    buildResult: {
-      state: TestState.WARN
-    }
+    state: TestState.WARN
   };
 
-  // Run pnpm install
+  // Ensure node_modules is present
   try {
-    execSync('pnpm install', { cwd: demoSrc, stdio: 'inherit' });
-    result.installResult.state = TestState.PASSED;
-  } catch (ex) {
-    result.installResult.state = TestState.FAILED;
-    result.installResult.error = ex.message;
+    const nodeModulesPath = path.join(demoSrc, 'node_modules');
+    await fs.access(nodeModulesPath);
+  } catch (e) {
+    result.state = TestState.FAILED;
+    result.error = e.message;
     return result;
   }
-
-  if (installOnly) return result;
 
   // Run pnpm build
   const packageJsonPath = path.join(demoSrc, 'package.json');
   const pkg = JSON.parse(await fs.readFile(packageJsonPath, 'utf-8'));
   if (!pkg.scripts['test:build']) {
-    result.buildResult.state = TestState.WARN;
+    result.state = TestState.WARN;
     return result;
   }
 
@@ -140,10 +133,10 @@ const processDemo = async (demoName: string, installOnly: boolean): Promise<Demo
     }
 
     execSync('pnpm run test:build', { cwd: demoSrc, stdio: 'inherit' });
-    result.buildResult.state = TestState.PASSED;
+    result.state = TestState.PASSED;
   } catch (ex) {
-    result.buildResult.state = TestState.FAILED;
-    result.buildResult.error = ex.message;
+    result.state = TestState.FAILED;
+    result.error = ex.message;
   }
 
   return result;
@@ -151,7 +144,7 @@ const processDemo = async (demoName: string, installOnly: boolean): Promise<Demo
 
 // Main function to read demos directory and process each demo
 const main = async () => {
-  const results: DemoResult[] = [];
+  const buildResults: TestResult[] = [];
 
   const args: string[] = [];
   const opts = {
@@ -198,20 +191,28 @@ const main = async () => {
       process.exit(0);
     }
 
+    console.log('Installing packages...');
+    try {
+      execSync('pnpm install', { stdio: 'inherit' });
+    } catch (e) {
+      console.error(`Error installing packages: ${e}`);
+      process.exit(1);
+    }
+    console.log('Done.\n');
+
+    if (opts.noBuild) {
+      process.exit(0);
+    }
+
     console.log('Processing demos...');
     for (const demoName of demoNames) {
       try {
-        results.push(await processDemo(demoName, opts.noBuild));
+        buildResults.push(await buildDemo(demoName));
       } catch (ex) {
-        results.push({
+        buildResults.push({
           name: demoName,
-          installResult: {
-            state: TestState.FAILED,
-            error: ex.message
-          },
-          buildResult: {
-            state: TestState.FAILED
-          }
+          state: TestState.FAILED,
+          error: ex.message
         });
         console.log(`::error file=${demoName},line=1,col=1::${ex}`);
       }
@@ -221,21 +222,16 @@ const main = async () => {
     process.exit(1);
   }
 
-  const errored = !!results.find(
-    (r) => r.installResult.state == TestState.FAILED || r.buildResult.state == TestState.FAILED
-  );
+  const errored = !!buildResults.find((r) => r.state == TestState.FAILED);
 
-  await core.summary
-    .addHeading('Test Results')
-    .addTable([
-      [
-        { data: 'Demo', header: true },
-        { data: 'Install', header: true },
-        { data: 'Build', header: true }
-      ],
-      ...results.map((r) => [r.name, displayState(r.installResult.state), displayState(r.buildResult.state)])
-    ])
-    .write();
+  for (const res of buildResults) {
+    const state = displayState(res.state);
+    if (res.error) {
+      console.log(`${res.name}: ${state}: ${res.error}`);
+    } else {
+      console.log(`${res.name}: ${state}`);
+    }
+  }
 
   if (errored) {
     console.error(`Some demos did not pass`);
