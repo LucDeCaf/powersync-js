@@ -79,6 +79,21 @@ const updateDependencies = async (packageJsonPath: string) => {
   await fs.writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2), 'utf8');
 };
 
+const filterDemos = (allDemos: string[], providedDemos: string[]): [string[], string[]] => {
+  const found: string[] = [];
+  const notFound: string[] = [];
+
+  providedDemos.forEach((demo) => {
+    if (allDemos.includes(demo)) {
+      found.push(demo);
+    } else {
+      notFound.push(demo);
+    }
+  });
+
+  return [found, notFound];
+};
+
 // Function to process each demo
 const processDemo = async (demoName: string): Promise<DemoResult> => {
   const demoSrc = path.join(demosDir, demoName);
@@ -144,7 +159,19 @@ const main = async () => {
   try {
     await ensureTmpDirExists();
 
-    const demoNames = await fs.readdir(demosDir);
+    const allDemos = await fs.readdir(demosDir);
+    let demoNames: string[];
+
+    if (process.argv.length > 2) {
+      const [foundDemos, notFoundDemos] = filterDemos(allDemos, process.argv.slice(2));
+      for (const demo of notFoundDemos) {
+        console.log(`⚠️ Warning: Failed to find '${demo}'`);
+      }
+      demoNames = foundDemos;
+    } else {
+      demoNames = allDemos;
+    }
+
     for (const demoName of demoNames) {
       try {
         results.push(await processDemo(demoName));
